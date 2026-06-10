@@ -3,8 +3,8 @@ import logging
 import anthropic
 import requests
 import tempfile
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,6 +26,9 @@ PREGUNTAS = [
 conversaciones = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in conversaciones:
+        del conversaciones[user_id]
     await update.message.reply_text(
         "Hola Gonzalo 👋\n\nSoy tu asistente de contenido para el blog.\n\n"
         "Envíame el TEMA o KEYWORD sobre el que quieres escribir y te haré 5 preguntas. "
@@ -39,33 +42,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if user_id not in conversaciones:
-        conversaciones[user_id] = {'tema': text, 'respuestas': [], 'pregunta_actual': 0}
+        conversaciones[user_id] = {'tema': text, 'respuestas': [], 'pregunta_actual': 0, 'esperando_confirmacion': False}
         await update.message.reply_text(
             f"Perfecto, vamos a crear un artículo sobre: *{text}*\n\n"
             "Ahora te haré 5 preguntas. Puedes responder con nota de voz o texto.\n",
             parse_mode='Markdown'
         )
         await enviar_pregunta(update, user_id)
-    else:
-        estado = conversaciones[user_id]
-        idx = estado['pregunta_actual']
-        if idx < len(PREGUNTAS):
-            estado['respuestas'].append(text)
-            estado['pregunta_actual'] += 1
-            if estado['pregunta_actual'] < len(PREGUNTAS):
-                await enviar_pregunta(update, user_id)
-            else:
-                await generar_articulo(update, user_id)
-        else:
-            del conversaciones[user_id]
-            conversaciones[user_id] = {'tema': text, 'respuestas': [], 'pregunta_actual': 0}
-            await update.message.reply_text(f"Nuevo artículo sobre: *{text}*", parse_mode='Markdown')
-            await enviar_pregunta(update, user_id)
+        return
+
+    estado = conversaciones[user_id]
+
+    if estado.get('esperando_confirmacion'):
+        await update.message.reply_text("Por favor usa los botones ✅ / ✏️ para confirmar o corregir tu respuesta.")
+        return
+
+    await procesar_respuesta(update, user_id, text)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in conversaciones:
         await update.message.reply_text("Primero dime el tema sobre el que quieres escribir.")
+        return
+
+    estado = conversaciones[user_id]
+    if estado.get('esperando_confirmacion'):
+        await update.message.reply_text("Por favor usa los botones ✅ / ✏️ primero.")
         return
 
     await update.message.reply_text("Transcribiendo tu nota de voz... 🎙️")
@@ -96,28 +98,82 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if response.status_code == 200:
         transcripcion = response.json().get('text', '')
         await update.message.reply_text(f"Entendido: _{transcripcion}_", parse_mode='Markdown')
-        estado = conversaciones[user_id]
-        estado['respuestas'].append(transcripcion)
-        estado['pregunta_actual'] += 1
-        if estado['pregunta_actual'] < len(PREGUNTAS):
-            await enviar_pregunta(update, user_id)
-        else:
-            await generar_articulo(update, user_id)
+        await procesar_respuesta(update, user_id, transcripcion)
     else:
         await update.message.reply_text("Error al transcribir. Intenta de nuevo o responde con texto.")
+
+async def procesar_respuesta(update: Update, user_id: int, texto: str):
+    estado = conversaciones[user_id]
+    estado['respuesta_pendiente'] = texto
+    estado['esperando_confirmacion'] = True
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Confirmar", callback_data="confirmar"),
+            InlineKeyboardButton("✏️ Corregir", callback_data="corregir"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    idx = estado['pregunta_actual']
+    await update.message.reply_text(
+        f"*Tu respuesta a la pregunta {idx+1}:*\n_{texto}_\n\n¿La confirmamos?",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if user_id not in conversaciones:
+        await query.edit_message_text("Sesión expirada. Escribe /start para empezar.")
+        return
+
+    estado = conversaciones[user_id]
+
+    if query.data == "confirmar":
+        texto = estado.pop('respuesta_pendiente', '')
+        estado['esperando_confirmacion'] = False
+        estado['respuestas'].append(texto)
+        estado['pregunta_actual'] += 1
+
+        await query.edit_message_text(f"✅ *Respuesta guardada.*", parse_mode='Markdown')
+
+        if estado['pregunta_actual'] < len(PREGUNTAS):
+            await context.bot.send_message(chat_id=query.message.chat_id,
+                text=f"*Pregunta {estado['pregunta_actual']+1}/5:*\n\n{PREGUNTAS[estado['pregunta_actual']]}",
+                parse_mode='Markdown')
+        else:
+            await generar_articulo(query, context, user_id)
+
+    elif query.data == "corregir":
+        estado['esperando_confirmacion'] = False
+        estado.pop('respuesta_pendiente', '')
+        idx = estado['pregunta_actual']
+        await query.edit_message_text("✏️ *Escribe o graba tu respuesta corregida:*", parse_mode='Markdown')
+        await context.bot.send_message(chat_id=query.message.chat_id,
+            text=f"*Pregunta {idx+1}/5:*\n\n{PREGUNTAS[idx]}",
+            parse_mode='Markdown')
 
 async def enviar_pregunta(update: Update, user_id: int):
     estado = conversaciones[user_id]
     idx = estado['pregunta_actual']
-    pregunta = PREGUNTAS[idx]
-    await update.message.reply_text(f"*Pregunta {idx+1}/5:*\n\n{pregunta}", parse_mode='Markdown')
+    await update.message.reply_text(
+        f"*Pregunta {idx+1}/5:*\n\n{PREGUNTAS[idx]}",
+        parse_mode='Markdown'
+    )
 
-async def generar_articulo(update: Update, user_id: int):
+async def generar_articulo(query, context, user_id: int):
     estado = conversaciones[user_id]
     tema = estado['tema']
     respuestas = estado['respuestas']
 
-    await update.message.reply_text("Generando tu artículo optimizado para SEO... ✍️ (puede tardar 30 segundos)")
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="✍️ Generando tu artículo optimizado para SEO... (puede tardar 30 segundos)"
+    )
 
     respuestas_texto = '\n'.join([
         f'P{i+1}: {PREGUNTAS[i]}\nR{i+1}: {respuestas[i]}'
@@ -161,22 +217,27 @@ Devuelve el artículo completo listo para copiar en WordPress."""
     if len(articulo) > MAX_LEN:
         partes = [articulo[i:i+MAX_LEN] for i in range(0, len(articulo), MAX_LEN)]
         for i, parte in enumerate(partes):
-            await update.message.reply_text(f"*Parte {i+1}/{len(partes)}:*\n\n{parte}", parse_mode='Markdown')
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"*Parte {i+1}/{len(partes)}:*\n\n{parte}",
+                parse_mode='Markdown'
+            )
     else:
-        await update.message.reply_text(articulo)
+        await context.bot.send_message(chat_id=query.message.chat_id, text=articulo)
 
-    await update.message.reply_text(
-        "✅ Artículo generado. Revísalo, añade tu toque personal y publícalo en WordPress.\n\n"
-        "¿Quieres crear otro artículo? Envíame el siguiente tema."
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="✅ Artículo generado. Revísalo, añade tu toque personal y publícalo en WordPress.\n\n¿Quieres crear otro? Envíame el siguiente tema."
     )
     del conversaciones[user_id]
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    logger.info('Bot iniciado')
+    logger.info('Bot iniciado v2')
     app.run_polling()
 
 if __name__ == '__main__':
