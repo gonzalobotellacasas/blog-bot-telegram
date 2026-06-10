@@ -1,3 +1,4 @@
 python-telegram-bot==21.3
-anthropic==0.28.0
+anthropic==0.26.1
+httpx==0.24.1
 requests==2.31.0
