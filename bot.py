@@ -20,8 +20,8 @@ PREGUNTAS = [
     "Cuéntame en 2-3 frases: ¿qué le dices a un paciente cuando te pregunta por esto por primera vez?",
     "¿Cuál es el miedo más común que tienen los pacientes sobre este tema y cómo lo resuelves?",
     "¿Qué detalle técnico o clínico diferencia tu enfoque como cirujano maxilofacial formado en Londres?",
-    ¿Hay algún error frecuente que cometan los pacientes o que veas en otras consultas sobre este tema?",
-"¿Qué le dirías a un paciente ideal para este procedimiento que está dudando en dar el paso?",
+    "¿Hay algún error frecuente que cometan los pacientes o que veas en otras consultas sobre este tema?",
+    "¿Qué le dirías a un paciente ideal para este procedimiento que está dudando en dar el paso?",
 ]
 
 STATE_FILE = 'state.json'
