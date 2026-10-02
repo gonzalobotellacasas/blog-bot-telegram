@@ -97,9 +97,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if response.status_code == 200:
         transcripcion = response.json().get('text', '')
-        await update.message.reply_text(f"Entendido: _{transcripcion}_", parse_mode='Markdown')
         await procesar_respuesta(update, user_id, transcripcion)
     else:
+        logger.error('Whisper %s: %s', response.status_code, response.text[:300])
         await update.message.reply_text("Error al transcribir. Intenta de nuevo o responde con texto.")
 
 async def procesar_respuesta(update: Update, user_id: int, texto: str):
@@ -116,10 +116,10 @@ async def procesar_respuesta(update: Update, user_id: int, texto: str):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     idx = estado['pregunta_actual']
+    vista = texto if len(texto) <= 3500 else texto[:3500] + ' [...] (texto completo guardado)'
     await update.message.reply_text(
-        f"*Tu respuesta a la pregunta {idx+1}:*\n_{texto}_\n\n¿La confirmamos?",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        f"Tu respuesta a la pregunta {idx+1}:\n{vista}\n\n¿La confirmamos?",
+        reply_markup=reply_markup
     )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,7 +207,7 @@ Devuelve el artículo completo listo para copiar en WordPress."""
 
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4000,
+        max_tokens=6000,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -219,8 +219,7 @@ Devuelve el artículo completo listo para copiar en WordPress."""
         for i, parte in enumerate(partes):
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
-                text=f"*Parte {i+1}/{len(partes)}:*\n\n{parte}",
-                parse_mode='Markdown'
+                text=f"Parte {i+1}/{len(partes)}:\n\n{parte}"
             )
     else:
         await context.bot.send_message(chat_id=query.message.chat_id, text=articulo)
